@@ -2,9 +2,10 @@ pico-8 cartridge // http://www.pico-8.com
 version 43
 __lua__
 --TODO
---Implement a wave system for enemy spawning
+--enemy behavior
 --ENEMY BULLET
 --BOMB
+--boss fight
 --JUICE
 --ENTRANCE ANIMATION
 --DEATH ANIMATION
@@ -22,8 +23,10 @@ actor_metatable = {
         spr = 1,
         type = 1,
         state = 0,
-        spr_w=1,
-        spr_h=1
+        spr_w = 1,
+        spr_h = 1,
+        dx = 1,
+        dy = 1
     },
 }
 
@@ -34,11 +37,41 @@ starx = {}
 stary = {}
 starspd = {}
 
+function move(obj)
+    if obj.osc then
+        obj.dx = sin(t/45)
+    end
+    if obj.follows then
+        if player.x + player.w/2 < obj.x + obj.w/2 then
+            obj.dx = -0.5
+        elseif player.x + player.w/2 > obj.x + obj.w/2 then
+            obj.dx = 0.5
+        else
+            obj.dx = 0
+        end
+    end
+    if obj.perpendicular then
+        if obj.dx==0 then
+            --go down first
+            obj.dy=1
+            if player.y <= obj.y then
+                obj.dy = 0
+                if player.x < obj.x then
+                    obj.dx = -1
+                else
+                    obj.dx=1
+                end
+            end
+        end
+    end
+    obj.x += obj.dx
+    obj.y += obj.dy
+end
+
 function starfield()
     for i = 1, #starx do
         local star_color = 7
         if starspd[i] < 1 then
-            star_color = 6
         elseif starspd[i] < 1.5 then
             star_color = 1
         end
@@ -71,6 +104,8 @@ function make_actor(x, y, speed, w, h, hit_w, hit_h,hp, spr, type, state, spr_w,
         spr_w = spr_w,
         spr_h = spr_h
     }
+    new_actor.dx = 1
+    new_actor.dy = 1
     -- Set its metatable to the actor_metatable
     setmetatable(new_actor, actor_metatable)
     return new_actor
@@ -349,27 +384,94 @@ function draw_explode(particles)
 end
 
 --enemies
+function enemy_state_manager(enemy)
+    --0=idle
+    --1=fly in
+    --1=moving
+    --2=attack
+    --3=shoot
+    --3=hit
+    --4=die
+    if enemy.wait > 0 then
+        enemy.wait -= 1
+        return
+    end
+    if enemy.state == 0 then
+        --idle
+        -- enemy.y += 10
+    end
+    if enemy.state == 1 then
+        enemy.x += (enemy.pos_x - enemy.x) / 8
+        enemy.y += (enemy.pos_y - enemy.y) / 8
+        if abs(enemy.y - enemy.pos_y) <= 0.6 then
+            enemy.state = 0
+        end
+    end
+    if enemy.state == 2 then
+        
+        if enemy.x < 32 and enemy.osc then
+            enemy.dx += 1-(enemy.x/32)
+        end
+        if enemy.x > 88 and enemy.osc then
+            enemy.dx -= (enemy.x-88)/32
+        end
+        move(enemy)
+    end
+end
 
-function spawn_enemy(x, y, en_type)
+function picking(enemies)
+    --randomly update state
+    if game_state != "game" then
+        return
+    end
+    -- local curr_enemy = rnd(enemies)
+    -- make sure they're idle first
+    if t % current_wave.attack_freq == 0 then
+        local chosen = flr(rnd(min(8, #enemies)))
+        chosen = #enemies - chosen
+        curr_enemy = enemies[chosen]
+        if curr_enemy and curr_enemy.state == 0 then
+            curr_enemy.state = 2
+        end
+    end
+end
+
+function spawn_enemy(x, y, en_type, en_wait)
     -- spawn enemy at random x position at top of screen
     -- x = flr(rnd(120))
     -- y = -8
-    local enemy = make_actor(x, y, 1, 8, 8, 8, 8, 3, 1, 2)
+    local enemy = make_actor(x, y, 3, 8, 8, 8, 8, 3, 1, 2, 0, 1, 1, 0, 1)
+    enemy.state = 1
+    --pos_ is target position, x is where the enemy will spawn
+    enemy.pos_x = x
+    enemy.pos_y = y
+
+    --spawn offscreen
+    enemy.y -= 66
+    enemy.x = enemy.x*1.3 - 32
+    enemy.dx = 0
+    --wait time during spawn
+    enemy.wait = en_wait
     --enemy map
     if en_type == 1 then
-        --cupcake
+        --cupcake: basic enemy
         enemy.spr=17
+        enemy.hp=2
+        enemy.osc = true
     elseif en_type == 2 then
         --deberry
         enemy.spr=18
+        enemy.hp=2
+        enemy.follows = true
     elseif en_type == 3 then
         --rainbow
         enemy.spr=19
+        enemy.perpendicular = true
     elseif en_type == 4 then
         --pretzel
         enemy.spr=20
     elseif en_type == 5 then
-        --chocolate
+        --chocolate chip
         enemy.spr=21
         enemy.hit_h=16
         enemy.hit_w=16
@@ -389,8 +491,7 @@ function update_enemies(enemies)
         local enemy = enemies[i]
         if enemy then
             --move enemy down
-            enemy.y = enemy.y + enemy.speed
-            
+            enemy_state_manager(enemy)
             --enemy is dead
             if enemy.hp <= 0 then
                 del(enemies, enemy)
@@ -398,12 +499,15 @@ function update_enemies(enemies)
             end
 
             --going out of bounds
-            if enemy.y > 128 then
+            if enemy.state != 1 and enemy.y > 128 then
+                del(enemies, enemy)
+            end
+            if enemy.state != 1 and (enemy.x < -40 or enemy.x > 156 or enemy.y < -16 or enemy.y > 136) then
                 del(enemies, enemy)
             end
         end
-
     end
+    picking(enemies)
 end
 
 function draw_enemies(enemies)
@@ -434,23 +538,73 @@ function enemy_update_hp(enemies, bullet_table)
                         del(bullet_table, bullet)
                         enemy.flash=3
                         enemy.hp = enemy.hp - 1
-                    end
+                    end  
                 end
             end
         end
     end
 end
 
+function place_enemy(level)
+    local curr_level = wave_map[wave]
+    -- col then row
+    for y = 1, #curr_level do
+        for x = 1, #curr_level[y] do
+            if curr_level[y][x] != 0 then
+                spawn_enemy(x * 12 - 6, y * 12 + 4, curr_level[y][x], x * 3)
+            end
+        end
+    end
+end
+
+function wave_manager(wave)
+    local curr_wave = {}
+    -- Do something with curr_wave
+    if wave == 1 then
+        curr_wave.attack_freq = 45
+    elseif wave  == 2 then
+        curr_wave.attack_freq = 30
+    elseif wave == 3 then
+        curr_wave.attack_freq = 20
+    elseif wave == 4 then
+        curr_wave.attack_freq = 60
+    end
+    return curr_wave
+end
+wave_map = {
+    {
+        {1,1,1,1,1,1,1,1,1,1},
+        {1,1,1,1,1,1,1,1,1,1},
+        {1,1,1,1,1,1,1,1,1,1}
+
+    },
+    {
+        {3,3,1,2,1,2,1,2,3,3},
+        {3,3,2,1,2,1,2,1,3,3},
+        {3,3,1,2,1,2,1,2,3,3}
+    },
+    {
+        {1,2,1,2,1,2,1,2,1,2},
+        {2,1,2,1,2,1,2,1,2,1}
+    },
+    {
+        {5}
+    },
+}
+
+
 --wave
 function start_wave()
     game_state = "wave_text"
     wave = wave + 1
     if #enemies == 0 and wave < 4 then
-        spawn_enemy(flr(rnd(120)),-8, rnd(4))
+        -- spawn_enemy(flr(rnd(120)),-8, 1)
+        place_enemy()
+        current_wave = wave_manager(wave)
     end
     if wave == 4 then
         -- spawn special enemy
-        spawn_enemy(flr(rnd(120)),-8,5)
+        place_enemy()
     end
 end
 --some code for wave management
@@ -474,7 +628,7 @@ function update_game()
     elseif game_state == "game" then
         --track current frame: 30 frames per second
         --change this when scheduler requires
-        t = (t + 1) % 30 
+        t = (t + 1) % 10000
         --update moves first
         move_player(player)
         update_bullet(bullet_table)
@@ -552,6 +706,7 @@ function draw_game()
         -- print(#enemies, 120, 2, 7)
         if #enemies > 0 then
             print(enemies[1].x..','..enemies[1].y, 100, 10, 7)
+            print(enemies[1].pos_y, 100, 10, 7)
         end
         print("state: " .. player.state, 90, 18, 7)
         print("bomb: " .. abs(player.bomb_progress - 1), 90, 26, 7)
@@ -565,6 +720,7 @@ function draw_game()
             print("bullet:"..x..","..y, 2, 32, 7)
         end
         print("game_state: " .. game_state, 2, 40, 7)
+        print("t: " .. t, 2, 90, 7)
         ----------------------------------------------------
         --actors
         draw_bullet(bullet_table)
@@ -598,7 +754,7 @@ function new_game()
     --reset particles
     particles = {}
     -- reset wave
-    wave = 3
+    wave = 1
     -- reset time
     t = 0
     wave_time = 60
